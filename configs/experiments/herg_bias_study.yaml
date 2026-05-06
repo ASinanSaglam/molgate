@@ -1,0 +1,44 @@
+experiment_name: herg_split_and_bias
+property: herg
+data_source: benchmark          # fixed test set — all runs comparable to leaderboard
+wandb_project: molgate-bias-study
+wandb_group: herg_split_comparison
+
+seeds: [42, 123, 456]
+
+split_variants:
+  - random
+  - scaffold
+
+bias_variants:
+  - null
+  - type: class_imbalance
+    positive_fraction: 0.1      # 10% positives — simulates rare-event training set
+    strategy: undersample_majority
+  - type: class_imbalance
+    positive_fraction: 0.5      # balanced classes
+    strategy: undersample_majority
+  - type: mw_range
+    max_mw: 400.0
+  - type: cluster
+    cluster_ids: [0]            # train on largest chemical series
+    butina_cutoff: 0.4
+  - type: cluster
+    cluster_ids: [0]
+    butina_cutoff: 0.4
+    invert: true                # exclude largest cluster from training
+
+# Full grid: 2 splits × 6 bias variants × 3 seeds = 36 runs
+
+model:
+  hidden_dim: 128
+  num_layers: 3
+  dropout: 0.1
+
+training:
+  epochs: 100
+  lr: 0.001
+  batch_size: 64
+  patience: 15
+
+results_dir: results/runs
