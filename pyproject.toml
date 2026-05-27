@@ -1,21 +1,97 @@
+# -- Build system --
+# Hatchling is a modern, minimal build backend maintained by the PyPA.
+# Unlike setuptools, it requires almost no boilerplate and natively
+# understands src-layout projects (our code lives in src/molgate/).
 [build-system]
-requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
+# -- Project metadata --
 [project]
 name = "molgate"
 version = "0.1.0"
-description = "ADMET property prediction pipeline with GNNs"
+description = "Molecular property prediction: dataset bias experiments with Prefect orchestration and W&B tracking."
 requires-python = ">=3.10"
+license = "MIT"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["admet*"]
+# -- Dependencies --
+# Grouped by purpose so you can trace why each one is here.
+dependencies = [
+    # === Data & numerics ===
+    "numpy",               # Array operations, fingerprint matrices
+    "pandas",              # DataFrames for dataset handling throughout
+    "scipy",               # Statistical tests (KS test for distribution shift, etc.)
 
+    # === Chemistry ===
+    "rdkit",               # Molecular parsing, descriptors, fingerprints, scaffolds, SMILES canonicalization
+    "tdc",                 # Therapeutics Data Commons — source of all 22 ADMET datasets
+
+    # === ML — classical ===
+    "scikit-learn",        # Train/test splitting, preprocessing, some metrics
+    "lightgbm",            # Gradient-boosted tree baseline model
+    "xgboost",             # Alternative tree baseline
+    "optuna",              # Hyperparameter tuning with Bayesian optimization
+
+    # === ML — deep learning ===
+    "torch",               # Neural network backend for GNN
+    "torch-geometric",     # Graph neural network layers, data structures, batching
+
+    # === Visualization ===
+    "matplotlib",          # Base plotting library
+    "seaborn",             # Statistical visualization (heatmaps, distribution plots)
+
+    # === Experiment infrastructure ===
+    "prefect",             # Workflow orchestration — manages the experiment matrix
+    "wandb",               # Experiment tracking — logs metrics, artifacts, comparison tables
+
+    # === Config ===
+    "pyyaml",              # Parse YAML config files (datasets.yaml, models.yaml, etc.)
+]
+
+# -- Dev / test dependencies --
+# Installed via: pip install -e ".[dev]"
+[project.optional-dependencies]
+dev = [
+    "pytest",              # Test runner
+    "pytest-cov",          # Coverage reporting
+    "ruff",                # Linter + formatter (replaces flake8, isort, black)
+    "mypy",                # Static type checking
+    "ipykernel",           # Jupyter kernel for notebooks
+]
+
+# -- Hatchling: tell it where our package source lives --
+# With src-layout, the importable code is under src/.
+# This directive makes `pip install -e .` map "molgate" to "src/molgate/".
+[tool.hatch.build.targets.wheel]
+packages = ["src/molgate"]
+
+# -- Ruff configuration --
+[tool.ruff]
+line-length = 100              # Slightly wider than PEP8's 79; easier to read with modern monitors
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes (unused imports, undefined names)
+    "I",    # isort (import ordering)
+    "UP",   # pyupgrade (modernize syntax for target Python version)
+    "B",    # flake8-bugbear (common bug patterns)
+    "SIM",  # flake8-simplify (simplifiable constructs)
+]
+
+# -- Pytest configuration --
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
+testpaths = ["tests"]          # pytest looks here by default
+addopts = "-v --tb=short"      # Verbose output, short tracebacks
+markers = [
+    "slow: tests that hit the network or take >10s (deselect with -m 'not slow')",
+]
 
-[tool.pyright]
-pythonVersion = "3.10"
-typeCheckingMode = "basic"
+# -- Mypy configuration --
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true          # Flag functions that return Any
+warn_unused_configs = true
+ignore_missing_imports = true   # Many science libs lack type stubs; don't block on that

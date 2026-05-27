@@ -1,0 +1,63 @@
+# bias_experiments.yaml — Definitions of dataset bias conditions.
+#
+# Each condition specifies a bias function (from data/bias.py) and its
+# parameters.  The bias_experiment Prefect flow reads this file to build
+# the experiment matrix: datasets × bias_conditions × models.
+
+bias_conditions:
+  unbiased:
+    bias_fn: null                         # No bias applied
+    split: "random"
+    description: "Full dataset, random split (control)."
+
+  unbiased_scaffold:
+    bias_fn: null
+    split: "scaffold"
+    description: "Full dataset, scaffold split (harder baseline)."
+
+  scaffold_top10:
+    bias_fn: "bias_by_scaffold"
+    params:
+      top_n: 10
+    split: "random"
+    description: "Keep only molecules from the 10 most common scaffolds."
+
+  mw_narrow:
+    bias_fn: "bias_by_property_range"
+    params:
+      property_col: "MW"                  # Molecular weight (computed at runtime)
+      low: 200
+      high: 400
+    split: "random"
+    description: "Keep only molecules with MW between 200-400 Da."
+
+  target_extremes_removed:
+    bias_fn: "bias_by_target_region"
+    params:
+      target_col: "Y"
+      quantile_low: 0.10
+      quantile_high: 0.90
+    split: "random"
+    description: "Drop the top and bottom 10% of the target distribution."
+
+  substructure_aromatic_only:
+    bias_fn: "bias_by_substructure"
+    params:
+      smarts: "c1ccccc1"                  # Benzene ring (aromatic)
+      keep: true
+    split: "random"
+    description: "Keep only molecules containing an aromatic ring."
+
+  cluster_top3:
+    bias_fn: "bias_by_cluster"
+    params:
+      n_keep: 3
+      cutoff: 0.65                        # Tanimoto distance cutoff (similarity >= 0.35)
+    split: "random"
+    description: "Butina-cluster by Tanimoto similarity, keep only the 3 largest clusters."
+
+# Experiment matrix definition
+experiment:
+  datasets: ["solubility"]                # Start with one; extend later
+  models: ["lgbm_morgan", "lgbm_descriptors", "gnn"]
+  seeds: [42]                             # Single seed to start; add more for robustness

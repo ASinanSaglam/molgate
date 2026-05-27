@@ -1,0 +1,52 @@
+# models.yaml — Model type definitions and default hyperparameters.
+#
+# Each top-level key is a model name used by the model factory.
+# `type` determines which class to instantiate; remaining keys are
+# passed as constructor/fit arguments.
+
+models:
+  lgbm_morgan:
+    type: "fingerprint"
+    fingerprint: "morgan"
+    fp_radius: 2
+    fp_nbits: 2048
+    estimator: "lightgbm"
+    lightgbm_params:
+      n_estimators: 500
+      learning_rate: 0.05
+      num_leaves: 31
+      max_depth: -1                       # No limit
+      min_child_samples: 20
+      subsample: 0.8
+      colsample_bytree: 0.8
+      verbose: -1                         # Suppress LightGBM stdout
+
+  lgbm_descriptors:
+    type: "fingerprint"                   # Same class, different features
+    fingerprint: "descriptors"            # Use RDKit 2D descriptors instead of Morgan
+    estimator: "lightgbm"
+    lightgbm_params:
+      n_estimators: 500
+      learning_rate: 0.05
+      num_leaves: 31
+      max_depth: -1
+      min_child_samples: 20
+      subsample: 0.8
+      colsample_bytree: 0.8
+      verbose: -1
+
+  gnn:
+    type: "gnn"
+    hidden_dim: 128
+    num_layers: 3                         # Message-passing rounds
+    dropout: 0.1
+    pool: "mean"                          # Global pooling: "mean" or "sum"
+    training:
+      lr: 0.001
+      weight_decay: 0.0001
+      epochs: 100
+      patience: 15                        # Early stopping patience (epochs)
+      batch_size: 64
+      scheduler: "reduce_on_plateau"
+      scheduler_patience: 5
+      scheduler_factor: 0.5

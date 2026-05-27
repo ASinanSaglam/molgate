@@ -1,0 +1,10 @@
+# wandb.yaml — Weights & Biases configuration.
+#
+# These values are read by training and flow code to initialize W&B runs.
+# Entity and project are the two things W&B needs to know where to log.
+
+wandb:
+  project: "molgate"
+  entity: null                            # Set to your W&B username/team, or null for default
+  tags_prefix: "molgate"                  # Prefix for auto-generated tags
+  mode: "online"                          # "online", "offline", or "disabled"

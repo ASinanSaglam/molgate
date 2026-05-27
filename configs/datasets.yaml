@@ -1,0 +1,29 @@
+# datasets.yaml — Which TDC ADMET datasets we work with and how.
+#
+# We start with solubility as the primary dataset, then extend to LD50
+# (regression) and Ames (classification) once the pipeline is end-to-end.
+# The full list of 22 is here for reference but commented out.
+
+datasets:
+  # --- Primary dataset (implement first) ---
+  solubility:
+    tdc_name: "Solubility_AqSolDB"       # Exact name passed to tdc.single_pred.ADME
+    task_type: "regression"
+    target_column: "Y"
+    metric: "rmse"                        # Primary evaluation metric
+    description: "Aqueous solubility (logS). ~9,982 compounds."
+
+  # --- Extension datasets (add after pipeline works for solubility) ---
+  # ld50:
+  #   tdc_name: "LD50_Zhu"
+  #   task_type: "regression"
+  #   target_column: "Y"
+  #   metric: "rmse"
+  #   description: "Acute toxicity LD50 in rats (log mg/kg). ~7,385 compounds."
+
+  # ames:
+  #   tdc_name: "AMES"
+  #   task_type: "classification"
+  #   target_column: "Y"
+  #   metric: "auroc"
+  #   description: "Ames mutagenicity (binary). ~7,255 compounds."
