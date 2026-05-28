@@ -8,31 +8,31 @@ The full load_dataset integration is tested with a small real dataset
 import pandas as pd
 import pytest
 
-from molgate.data.loaders import _canonicalize_smiles, _clean_dataframe
+from molgate.data.loaders import _desalt_and_canonicalize, _clean_dataframe
 from molgate.data.registry import get_dataset_info
 
 
-class TestCanonicalizeSmiles:
-    """Tests for the _canonicalize_smiles helper."""
+class TestDesaltAndCanonicalize:
+    """Tests for the _desalt_and_canonicalize helper."""
 
     def test_canonical_form(self):
         """Different SMILES for the same molecule should produce the same output."""
         # Ethanol written three ways
-        assert _canonicalize_smiles("CCO") == _canonicalize_smiles("OCC")
-        assert _canonicalize_smiles("CCO") == _canonicalize_smiles("C(O)C")
+        assert _desalt_and_canonicalize("CCO") == _desalt_and_canonicalize("OCC")
+        assert _desalt_and_canonicalize("CCO") == _desalt_and_canonicalize("C(O)C")
 
     def test_already_canonical(self):
         """Canonical SMILES should be returned unchanged."""
         canonical = "c1ccccc1"  # benzene
-        assert _canonicalize_smiles(canonical) == canonical
+        assert _desalt_and_canonicalize(canonical) == canonical
 
     def test_invalid_smiles(self):
         """Invalid SMILES should return None."""
-        assert _canonicalize_smiles("not_a_molecule") is None
+        assert _desalt_and_canonicalize("not_a_molecule") is None
 
     def test_complex_molecule(self):
         """Aspirin should canonicalize consistently."""
-        result = _canonicalize_smiles("CC(=O)Oc1ccccc1C(=O)O")
+        result = _desalt_and_canonicalize("CC(=O)Oc1ccccc1C(=O)O")
         assert result is not None
         assert isinstance(result, str)
         assert len(result) > 0
@@ -71,14 +71,14 @@ class TestCleanDataframe:
         """Duplicate SMILES (after canonicalization) should be deduplicated."""
         result = _clean_dataframe(raw_df, sol_info)
         # "CCO" and "OCC" are the same molecule — only one should remain
-        ethanol_canonical = _canonicalize_smiles("CCO")
+        ethanol_canonical = _desalt_and_canonicalize("CCO")
         ethanol_rows = result[result["smiles"] == ethanol_canonical]
         assert len(ethanol_rows) == 1
 
     def test_keeps_first_duplicate(self, raw_df, sol_info):
         """When deduplicating, the first occurrence should be kept."""
         result = _clean_dataframe(raw_df, sol_info)
-        ethanol_canonical = _canonicalize_smiles("CCO")
+        ethanol_canonical = _desalt_and_canonicalize("CCO")
         ethanol_row = result[result["smiles"] == ethanol_canonical].iloc[0]
         # mol1 was first
         assert ethanol_row["drug_id"] == "mol1"
@@ -98,6 +98,21 @@ class TestCleanDataframe:
         })
         result = _clean_dataframe(df, sol_info)
         assert len(result) == 3
+
+    def test_salt_stripping(self, sol_info):
+        """Salts should be desalted; same base molecule should deduplicate."""
+        df = pd.DataFrame({
+            "Drug": [
+                "CCCCC(CC)C(=O)[O-].[Na+]",    # sodium salt
+                "CCCCC(CC)C(=O)[O-].[K+]",     # potassium salt — same acid
+                "c1ccccc1",                      # benzene (no salt)
+            ],
+            "Drug_ID": ["salt_na", "salt_k", "benzene"],
+            "Y": [1.0, 2.0, 3.0],
+        })
+        result = _clean_dataframe(df, sol_info)
+        # Two salts of the same acid → same desalted SMILES → deduplicated to 1
+        assert len(result) == 2  # acid + benzene
 
 
 @pytest.mark.slow
