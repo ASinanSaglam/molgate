@@ -60,4 +60,4 @@ bias_conditions:
 experiment:
   datasets: ["solubility"]                # Start with one; extend later
   models: ["lgbm_morgan", "lgbm_descriptors", "gnn"]
-  seeds: [42]                             # Single seed to start; add more for robustness
+  seeds: [42, 123, 7]                     # 3 seeds for variance estimates
