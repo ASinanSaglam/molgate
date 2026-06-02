@@ -91,6 +91,14 @@ class Trainer:
     >>> trainer = Trainer(model, task_type="regression")
     >>> history = trainer.fit(train_graphs, val_graphs)
     >>> print(f"Best val loss: {history.best_val_loss:.4f} at epoch {history.best_epoch}")
+
+    With W&B logging::
+
+    >>> from molgate.tracking import init_run, build_tags
+    >>> run = init_run(name="gnn_solubility", ...)
+    >>> trainer = Trainer(model, task_type="regression", wandb_run=run)
+    >>> history = trainer.fit(train_graphs, val_graphs)  # logs to W&B each epoch
+    >>> run.finish()
     """
 
     def __init__(
@@ -105,6 +113,7 @@ class Trainer:
         scheduler_patience: int = 5,
         scheduler_factor: float = 0.5,
         device: str = "cpu",
+        wandb_run=None,
     ) -> None:
         # Device handling
         if device == "cuda" and not torch.cuda.is_available():
@@ -143,10 +152,15 @@ class Trainer:
             patience=scheduler_patience,
         )
 
+        # Optional W&B run for experiment tracking.  When provided, the
+        # trainer logs train_loss, val_loss, val_<metric>, and lr each epoch.
+        # When None (default), no W&B calls are made.
+        self.wandb_run = wandb_run
+
         logger.info(
             f"Trainer: task={task_type}, lr={lr}, wd={weight_decay}, "
             f"epochs={epochs}, patience={patience}, batch_size={batch_size}, "
-            f"device={self.device}"
+            f"device={self.device}, wandb={'yes' if wandb_run else 'no'}"
         )
 
     @classmethod
@@ -167,6 +181,7 @@ class Trainer:
             scheduler_patience=training_config.get("scheduler_patience", 5),
             scheduler_factor=training_config.get("scheduler_factor", 0.5),
             device=training_config.get("device", "cpu"),
+            wandb_run=training_config.get("wandb_run"),
         )
 
     def fit(
@@ -236,6 +251,18 @@ class Trainer:
             else:
                 epochs_without_improvement += 1
 
+            # --- W&B logging (every epoch) ---
+            if self.wandb_run is not None:
+                wb_metrics = {
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "lr": current_lr,
+                }
+                # Prefix val metrics with "val_" for clarity in W&B dashboard
+                for k, v in val_metrics.items():
+                    wb_metrics[f"val_{k}"] = v
+                self.wandb_run.log(wb_metrics, step=epoch)
+
             # Log every 10 epochs or on improvement
             if epoch % 10 == 0 or epochs_without_improvement == 0:
                 primary_metric = "rmse" if self.task_type == "regression" else "auroc"
@@ -261,6 +288,16 @@ class Trainer:
             self.model.to(self.device)
 
         history.training_time_seconds = time.time() - start_time
+
+        # Log training summary to W&B
+        if self.wandb_run is not None:
+            self.wandb_run.summary.update({
+                "best_epoch": history.best_epoch,
+                "best_val_loss": history.best_val_loss,
+                "training_time_seconds": history.training_time_seconds,
+                "total_epochs": len(history.train_loss),
+            })
+
         logger.info(
             f"Training complete in {history.training_time_seconds:.1f}s. "
             f"Best val loss: {history.best_val_loss:.4f} at epoch {history.best_epoch}"
