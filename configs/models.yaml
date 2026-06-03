@@ -50,3 +50,88 @@ models:
       scheduler: "reduce_on_plateau"
       scheduler_patience: 5
       scheduler_factor: 0.5
+
+  # ---------------------------------------------------------------------------
+  # Additional sklearn-based base models
+  # ---------------------------------------------------------------------------
+
+  rf_morgan:
+    type: "sklearn"
+    sklearn_class: "RandomForestRegressor"
+    fingerprint: "morgan"
+    fp_radius: 2
+    fp_nbits: 2048
+    sklearn_params:
+      n_estimators: 300
+      n_jobs: -1
+      random_state: 42
+
+  rf_descriptors:
+    type: "sklearn"
+    sklearn_class: "RandomForestRegressor"
+    fingerprint: "descriptors"
+    sklearn_params:
+      n_estimators: 300
+      n_jobs: -1
+      random_state: 42
+
+  ridge_descriptors:
+    type: "sklearn"
+    sklearn_class: "Ridge"
+    fingerprint: "descriptors"
+    sklearn_params:
+      alpha: 1.0
+
+  svr_descriptors:
+    type: "sklearn"
+    sklearn_class: "SVR"
+    fingerprint: "descriptors"
+    sklearn_params:
+      kernel: "rbf"
+      C: 10.0
+      epsilon: 0.1
+
+  # ---------------------------------------------------------------------------
+  # Ensemble configs
+  # ---------------------------------------------------------------------------
+
+  ensemble_voting_fp:
+    type: "ensemble"
+    ensemble_type: "voting"
+    # Fast: no GNN required — all base models use numpy arrays
+    base_models:
+      - lgbm_morgan
+      - lgbm_descriptors
+      - rf_morgan
+      - ridge_descriptors
+
+  ensemble_voting_all:
+    type: "ensemble"
+    ensemble_type: "voting"
+    # Full ensemble including GNN (requires graph featurization)
+    base_models:
+      - lgbm_morgan
+      - lgbm_descriptors
+      - gnn
+
+  ensemble_blending:
+    type: "ensemble"
+    ensemble_type: "blending"
+    # Requires a separate validation set at fit time
+    base_models:
+      - lgbm_morgan
+      - lgbm_descriptors
+      - rf_morgan
+    meta_alpha: 1.0
+
+  ensemble_stacking:
+    type: "ensemble"
+    ensemble_type: "stacking"
+    # K-fold OOF for fast models; GNN (if listed) uses hybrid single-pass path
+    base_models:
+      - lgbm_morgan
+      - lgbm_descriptors
+      - rf_morgan
+      - ridge_descriptors
+    n_folds: 5
+    meta_alpha: 1.0

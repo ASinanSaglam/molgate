@@ -111,10 +111,14 @@ def create_model(
         return _create_fingerprint_model(config, task_type)
     elif model_type == "gnn":
         return _create_gnn_model(config, task_type)
+    elif model_type == "sklearn":
+        return _create_sklearn_model(config, task_type)
+    elif model_type == "ensemble":
+        return _create_ensemble_model(config, task_type, config_path)
     else:
         raise ValueError(
             f"Unknown model type: {model_type!r}. "
-            f"Supported types: 'fingerprint', 'gnn'"
+            f"Supported types: 'fingerprint', 'gnn', 'sklearn', 'ensemble'"
         )
 
 
@@ -173,6 +177,95 @@ def _create_gnn_model(config: dict, task_type: str):
     model.training_config = training_config
 
     return model
+
+
+def _create_sklearn_model(config: dict, task_type: str):
+    """Build a SklearnModel from config.
+
+    Config keys consumed:
+        - sklearn_class: name of the sklearn estimator (e.g. "Ridge", "SVR")
+        - sklearn_params: kwargs passed to the estimator constructor
+        - fingerprint / fp_radius / fp_nbits: featurization metadata
+    """
+    from molgate.models.sklearn_models import SklearnModel, get_sklearn_class
+
+    cls_name = config.get("sklearn_class")
+    if not cls_name:
+        raise ValueError("sklearn model config must include 'sklearn_class'")
+
+    params = config.get("sklearn_params", {})
+    estimator_cls = get_sklearn_class(cls_name)
+
+    # Adjust for classification — some sklearn classes accept class_weight etc.
+    # For now just pass params as-is; factory caller sets task_type.
+    estimator = estimator_cls(**params)
+
+    feature_type = config.get("fingerprint", "descriptors")
+    model = SklearnModel(
+        estimator=estimator,
+        task_type=task_type,
+        feature_type=feature_type,
+        fp_radius=config.get("fp_radius", 2),
+        fp_nbits=config.get("fp_nbits", 2048),
+    )
+    return model
+
+
+def _create_ensemble_model(config: dict, task_type: str, config_path=None):
+    """Build an ensemble model from config.
+
+    Config keys consumed:
+        - ensemble_type: "voting", "blending", or "stacking"
+        - base_models: list of model names (resolved recursively via create_model)
+        - weights: optional list of floats (voting only)
+        - meta_alpha: float (blending / stacking)
+        - n_folds: int (stacking)
+
+    GNN base models are automatically wrapped in GNNModelWrapper.
+    """
+    from molgate.models.ensemble import (
+        BlendingEnsemble,
+        GNNModelWrapper,
+        StackingEnsemble,
+        VotingEnsemble,
+    )
+
+    ensemble_type = config.get("ensemble_type", "voting")
+    base_model_names = config.get("base_models", [])
+    if not base_model_names:
+        raise ValueError("ensemble config must include at least one entry in 'base_models'")
+
+    # Recursively create each base model
+    base_models: dict[str, Any] = {}
+    for name in base_model_names:
+        m = create_model(name, task_type=task_type, config_path=config_path)
+        # Wrap GNN in GNNModelWrapper so it fits the ensemble interface
+        if hasattr(m, "training_config"):
+            training_cfg = m.training_config
+            m = GNNModelWrapper(
+                gnn_model=m,
+                training_config=training_cfg,
+                task_type=task_type,
+            )
+        base_models[name] = m
+
+    meta_alpha = config.get("meta_alpha", 1.0)
+    n_folds = config.get("n_folds", 5)
+    weights = config.get("weights", None)
+
+    if ensemble_type == "voting":
+        return VotingEnsemble(base_models, task_type=task_type, weights=weights)
+    elif ensemble_type == "blending":
+        return BlendingEnsemble(base_models, task_type=task_type, meta_alpha=meta_alpha)
+    elif ensemble_type == "stacking":
+        return StackingEnsemble(
+            base_models, task_type=task_type, n_folds=n_folds, meta_alpha=meta_alpha
+        )
+    else:
+        raise ValueError(
+            f"Unknown ensemble_type: {ensemble_type!r}. "
+            f"Supported: 'voting', 'blending', 'stacking'"
+        )
 
 
 def _deep_merge(base: dict, overrides: dict) -> dict:

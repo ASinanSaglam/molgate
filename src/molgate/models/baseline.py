@@ -134,6 +134,19 @@ class FingerprintModel:
             return self.model_.predict_proba(X)[:, 1]
         return self.model_.predict(X)
 
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Return class probabilities for classification.
+
+        Returns the full (n_samples, n_classes) probability matrix from
+        the underlying estimator.  For binary classification col[:, 1] is
+        the positive-class probability.  Raises if called on a regression model.
+        """
+        if self.task_type != "classification":
+            raise RuntimeError("predict_proba() is only valid for classification models.")
+        if self.model_ is None:
+            raise RuntimeError("Model not fitted yet. Call fit() first.")
+        return self.model_.predict_proba(X)
+
     def get_params(self) -> dict:
         """Return the model's current hyperparameters.
 

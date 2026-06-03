@@ -44,7 +44,7 @@ class TestRegistry:
         assert isinstance(info, DatasetInfo)
         assert info.tdc_name == "Solubility_AqSolDB"
         assert info.task_type == "regression"
-        assert info.metric == "rmse"
+        assert info.metric == "mae"
 
     def test_get_dataset_info_invalid(self):
         """Looking up an invalid name should raise KeyError with helpful message."""
