@@ -152,11 +152,23 @@ def task_split_dataset(
     df: pd.DataFrame,
     split_type: str = "random",
     seed: int = 42,
+    fixed_test_df: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Split dataset into train/val/test."""
+    """Split dataset into train/val/test.
+
+    When ``fixed_test_df`` is provided (TDC benchmark mode), ``df`` is
+    split into train/val only and the fixed test set is used as-is.
+    This ensures evaluation is always on the same held-out molecules
+    regardless of which bias condition was applied to the training data.
+    """
     from molgate.data.splits import random_split, scaffold_split
 
-    if split_type == "scaffold":
+    if fixed_test_df is not None:
+        # TDC benchmark mode: df is train_val; split into train/val only.
+        splits = random_split(df, val_frac=0.1, test_frac=0.0, seed=seed)
+        splits["test"] = fixed_test_df.reset_index(drop=True)
+        logger.info(f"  Using fixed TDC test set: {len(fixed_test_df)} molecules")
+    elif split_type == "scaffold":
         splits = scaffold_split(df, seed=seed)
     else:
         splits = random_split(df, seed=seed)
@@ -391,6 +403,8 @@ def train_flow(
     seed: int = 42,
     model_overrides: dict | None = None,
     wandb_mode: str = "disabled",
+    preloaded_df: pd.DataFrame | None = None,
+    preloaded_test_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Train a single model on a single dataset variant.
 
@@ -413,6 +427,15 @@ def train_flow(
         Override model hyperparameters (passed to factory).
     wandb_mode : str
         W&B mode: "online", "offline", or "disabled".
+    preloaded_df : pd.DataFrame, optional
+        Pre-loaded (and pre-enriched) DataFrame to use instead of downloading
+        from TDC.  Passed by ``bias_experiment_flow`` so that computed columns
+        (e.g. MW) are available for property-range bias conditions.
+    preloaded_test_df : pd.DataFrame, optional
+        Fixed test set from TDC's benchmark scaffold split.  When provided,
+        bias is applied only to ``preloaded_df`` (the training pool) and this
+        test set is used as-is for evaluation — never biased, always the same
+        held-out molecules across all conditions.
 
     Returns
     -------
@@ -426,8 +449,12 @@ def train_flow(
         f"(bias={bias_name}, split={split_type}, seed={seed})"
     )
 
-    # 1. Load dataset
-    full_df = task_load_dataset(dataset_name)
+    # 1. Load dataset (skip if caller already prepared one)
+    if preloaded_df is not None:
+        full_df = preloaded_df
+        logger.info(f"Using preloaded DataFrame: {len(full_df)} molecules")
+    else:
+        full_df = task_load_dataset(dataset_name)
 
     # 2. Apply bias (if any)
     working_df, bias_metadata = task_apply_bias(full_df, bias_config)
@@ -442,7 +469,12 @@ def train_flow(
         )
 
     # 4. Split
-    splits = task_split_dataset(working_df, split_type=split_type, seed=seed)
+    splits = task_split_dataset(
+        working_df,
+        split_type=split_type,
+        seed=seed,
+        fixed_test_df=preloaded_test_df,
+    )
 
     # 5. Create model (to read its feature_type metadata)
     model = task_create_model(model_name, task_type, overrides=model_overrides)

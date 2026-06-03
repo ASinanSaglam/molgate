@@ -32,6 +32,7 @@ from typing import Any
 import pandas as pd
 import yaml
 from prefect import flow, task
+from prefect.task_runners import ConcurrentTaskRunner
 
 logger = logging.getLogger(__name__)
 
@@ -96,33 +97,62 @@ def _build_bias_config(condition_name: str, condition: dict) -> dict | None:
 # Tasks
 # ---------------------------------------------------------------------------
 
-@task(name="prepare_dataset")
-def task_prepare_dataset(dataset_name: str) -> pd.DataFrame:
-    """Load dataset and add computed descriptor columns (e.g., MW).
+def _enrich_with_descriptors(df: pd.DataFrame) -> pd.DataFrame:
+    """Merge computed descriptor columns (e.g., mw) into a DataFrame in-place.
 
-    Some bias conditions (like ``mw_narrow``) filter on molecular
-    properties that aren't in the raw TDC data.  We compute RDKit
-    descriptors and merge them so they're available for any bias
-    function that needs them.
+    Only adds columns that don't already exist (checked case-insensitively).
+    Used to make MW and other physicochemical properties available for
+    bias conditions that filter on them.
     """
     from molgate.data.featurizer import compute_descriptors
-    from molgate.data.loaders import load_dataset
 
-    df = load_dataset(dataset_name)
-
-    # Compute descriptors and merge MW (and others) into the main df.
-    # We use lowercase column names to match our descriptor naming.
     desc_df = compute_descriptors(df["smiles"].tolist())
-
-    # Only merge columns that don't already exist
     for col in desc_df.columns:
-        col_upper = col.upper()
-        # Check both cases — bias config might reference "MW" or "mw"
-        if col not in df.columns and col_upper not in df.columns:
+        if col not in df.columns and col.upper() not in df.columns:
             df[col] = desc_df[col].values
-
-    logger.info(f"Prepared {dataset_name}: {len(df)} molecules, {len(df.columns)} columns")
     return df
+
+
+@task(name="prepare_dataset")
+def task_prepare_dataset(
+    dataset_name: str,
+    use_tdc_eval: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Load dataset and enrich training data with descriptor columns.
+
+    Parameters
+    ----------
+    dataset_name : str
+        Registry key (e.g., "solubility").
+    use_tdc_eval : bool
+        When True (default), loads TDC's fixed benchmark scaffold split and
+        returns ``(train_val_df, test_df)``.  The test split is never biased.
+        When False, loads the full dataset and returns ``(full_df, None)``
+        so the caller handles splitting.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame | None]
+        (train_df, test_df).  test_df is None when use_tdc_eval=False.
+    """
+    if use_tdc_eval:
+        from molgate.data.loaders import load_tdc_benchmark_split
+        train_df, test_df = load_tdc_benchmark_split(dataset_name)
+    else:
+        from molgate.data.loaders import load_dataset
+        train_df = load_dataset(dataset_name)
+        test_df = None
+
+    # Enrich training data with descriptor columns so bias functions that
+    # filter on physicochemical properties (e.g. MW) can find them.
+    train_df = _enrich_with_descriptors(train_df)
+
+    n_test = len(test_df) if test_df is not None else "N/A"
+    logger.info(
+        f"Prepared {dataset_name}: {len(train_df)} train molecules, "
+        f"{n_test} test molecules, {len(train_df.columns)} columns"
+    )
+    return train_df, test_df
 
 
 @task(name="build_experiment_matrix")
@@ -180,6 +210,8 @@ def task_run_single(
     task_type: str,
     model_overrides: dict | None,
     wandb_mode: str,
+    preloaded_df: pd.DataFrame | None = None,
+    preloaded_test_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Execute a single train_flow run from a matrix specification.
 
@@ -202,6 +234,8 @@ def task_run_single(
         seed=run_spec["seed"],
         model_overrides=model_overrides,
         wandb_mode=wandb_mode,
+        preloaded_df=preloaded_df,
+        preloaded_test_df=preloaded_test_df,
     )
 
     # Attach condition name for aggregation
@@ -244,7 +278,7 @@ def task_aggregate_results(results: list[dict]) -> pd.DataFrame:
 # Flow
 # ---------------------------------------------------------------------------
 
-@flow(name="bias_experiment", log_prints=True)
+@flow(name="bias_experiment", log_prints=True, task_runner=ConcurrentTaskRunner(max_workers=3))
 def bias_experiment_flow(
     config_path: str | None = None,
     datasets: list[str] | None = None,
@@ -254,6 +288,7 @@ def bias_experiment_flow(
     task_type: str = "regression",
     model_overrides: dict | None = None,
     wandb_mode: str = "disabled",
+    use_tdc_eval: bool = True,
 ) -> pd.DataFrame:
     """Run the full bias experiment matrix.
 
@@ -275,6 +310,24 @@ def bias_experiment_flow(
         Override model hyperparameters (e.g., reduce GNN epochs for testing).
     wandb_mode : str
         W&B mode: "online", "offline", or "disabled".
+    use_tdc_eval : bool
+        When True (default), use TDC's fixed benchmark scaffold split so
+        evaluation is always on the same held-out test set regardless of
+        which bias condition was applied to training data.  Results are
+        directly comparable to TDC leaderboard submissions.
+        When False, the full dataset is split per-run (original behaviour).
+
+    Notes
+    -----
+    Parallelism is controlled by the flow's task runner, set to
+    ``ConcurrentTaskRunner(max_workers=3)`` by default.  To override at
+    call time use::
+
+        bias_experiment_flow.with_options(
+            task_runner=ConcurrentTaskRunner(max_workers=N)
+        )(...)
+
+    or pass ``--max-workers N`` to ``scripts/run_bias_experiment.py``.
 
     Returns
     -------
@@ -295,25 +348,36 @@ def bias_experiment_flow(
         conditions=conditions,
     )
 
-    # 3. Run each experiment sequentially
-    results = []
-    for i, run_spec in enumerate(matrix):
-        cond = run_spec["condition_name"]
-        logger.info(
-            f"\n{'='*60}\n"
-            f"Experiment {i+1}/{len(matrix)}: "
-            f"{run_spec['model']} / {run_spec['dataset']} / {cond}\n"
-            f"{'='*60}"
-        )
-        result = task_run_single(
+    # 3. Pre-load each unique dataset once (with descriptor columns merged).
+    #    Returns (train_df, test_df) in TDC eval mode, or (full_df, None)
+    #    in legacy mode.  Bias is applied only to train_df; test_df is the
+    #    fixed held-out set shared across all conditions.
+    unique_datasets = list({r["dataset"] for r in matrix})
+    prepared: dict[str, tuple[pd.DataFrame, pd.DataFrame | None]] = {}
+    for ds in unique_datasets:
+        logger.info(f"Preparing dataset: {ds}")
+        prepared[ds] = task_prepare_dataset(ds, use_tdc_eval=use_tdc_eval)
+
+    # 4. Submit all experiments concurrently.
+    #    .submit() returns immediately with a PrefectFuture; the
+    #    ConcurrentTaskRunner schedules up to max_workers at a time.
+    logger.info(f"Submitting {len(matrix)} experiment runs...")
+    futures = [
+        task_run_single.submit(
             run_spec=run_spec,
             task_type=task_type,
             model_overrides=model_overrides,
+            preloaded_df=prepared[run_spec["dataset"]][0],
+            preloaded_test_df=prepared[run_spec["dataset"]][1],
             wandb_mode=wandb_mode,
         )
-        results.append(result)
+        for run_spec in matrix
+    ]
 
-    # 4. Aggregate into a comparison DataFrame
+    # 5. Collect results (blocks until all futures are done)
+    results = [f.result() for f in futures]
+
+    # 6. Aggregate into a comparison DataFrame
     results_df = task_aggregate_results(results)
 
     logger.info(f"\nBias experiment complete: {len(results_df)} runs")

@@ -2,17 +2,20 @@
 
 Usage
 -----
-# LightGBM only (fast, ~10-15 min):
+# LightGBM only (fast, ~10-15 min, 3 concurrent runs):
 python scripts/run_bias_experiment.py
 
-# Full matrix including GNN:
-python scripts/run_bias_experiment.py --models lgbm_morgan lgbm_descriptors gnn
+# Full matrix including GNN (reduce concurrency to avoid OOM):
+python scripts/run_bias_experiment.py --models lgbm_morgan lgbm_descriptors gnn --max-workers 1
 
 # Specific conditions only:
 python scripts/run_bias_experiment.py --conditions unbiased scaffold_top10 mw_narrow
 
 # Offline W&B (sync later with `wandb sync`):
 python scripts/run_bias_experiment.py --wandb-mode offline
+
+# Override parallelism:
+python scripts/run_bias_experiment.py --max-workers 6
 """
 
 from __future__ import annotations
@@ -64,6 +67,21 @@ def parse_args() -> argparse.Namespace:
         help="W&B mode (default: online).",
     )
     parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=3,
+        help="Max concurrent experiment runs (default: 3). Use 1 for GNN to avoid OOM.",
+    )
+    parser.add_argument(
+        "--no-tdc-eval",
+        action="store_true",
+        help=(
+            "Disable TDC benchmark evaluation. By default the fixed TDC "
+            "scaffold split is used so results are leaderboard-comparable. "
+            "Pass this flag to use per-run custom splits instead."
+        ),
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Path to save results CSV (default: outputs/<dataset>_<models>_results.csv).",
@@ -74,6 +92,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    from prefect.task_runners import ConcurrentTaskRunner
     from molgate.flows.bias_experiment import bias_experiment_flow
 
     model_tag = "_".join(args.models)
@@ -82,21 +101,28 @@ def main() -> None:
     print("=" * 60)
     print("Bias Experiment Run")
     print("=" * 60)
-    print(f"  Datasets   : {args.datasets}")
-    print(f"  Models     : {args.models}")
-    print(f"  Conditions : {args.conditions or 'all'}")
-    print(f"  Seeds      : {args.seeds or 'from config'}")
-    print(f"  Task type  : {args.task_type}")
-    print(f"  W&B mode   : {args.wandb_mode}")
+    print(f"  Datasets    : {args.datasets}")
+    print(f"  Models      : {args.models}")
+    print(f"  Conditions  : {args.conditions or 'all'}")
+    print(f"  Seeds       : {args.seeds or 'from config'}")
+    print(f"  Task type   : {args.task_type}")
+    print(f"  W&B mode    : {args.wandb_mode}")
+    print(f"  Max workers : {args.max_workers}")
+    print(f"  TDC eval    : {not args.no_tdc_eval}")
     print("=" * 60)
 
-    results = bias_experiment_flow(
+    flow = bias_experiment_flow.with_options(
+        task_runner=ConcurrentTaskRunner(max_workers=args.max_workers)
+    )
+
+    results = flow(
         datasets=args.datasets,
         models=args.models,
         conditions=args.conditions,
         seeds=args.seeds,
         task_type=args.task_type,
         wandb_mode=args.wandb_mode,
+        use_tdc_eval=not args.no_tdc_eval,
     )
 
     # Save results
