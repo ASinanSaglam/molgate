@@ -46,6 +46,9 @@ dependencies = [
 
     # === Config ===
     "pyyaml",              # Parse YAML config files (datasets.yaml, models.yaml, etc.)
+
+    # === Model distribution ===
+    "huggingface_hub",     # Download serialized checkpoints via `molgate init`
 ]
 
 # -- Dev / test dependencies --
@@ -62,6 +65,9 @@ dev = [
 # -- Hatchling: tell it where our package source lives --
 # With src-layout, the importable code is under src/.
 # This directive makes `pip install -e .` map "molgate" to "src/molgate/".
+[project.scripts]
+molgate = "molgate.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/molgate"]
 
