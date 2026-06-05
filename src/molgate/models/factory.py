@@ -59,6 +59,7 @@ def create_model(
     task_type: str = "regression",
     config_path: str | Path | None = None,
     overrides: dict[str, Any] | None = None,
+    base_models: dict[str, Any] | None = None,
 ):
     """Create a model instance from a named configuration.
 
@@ -73,6 +74,12 @@ def create_model(
     overrides : dict, optional
         Key-value pairs that override config values. Useful for
         hyperparameter sweeps without modifying the YAML file.
+    base_models : dict[str, model], optional
+        Pre-instantiated base model objects for ensemble configs.  When
+        provided, the config's ``base_models`` name list is ignored and
+        these instances are used directly.  Keys are the model names that
+        ``X_dict`` will use when calling ``fit`` / ``predict``.  Ignored
+        for non-ensemble model types.
 
     Returns
     -------
@@ -91,6 +98,8 @@ def create_model(
     >>> model = create_model("lgbm_morgan", task_type="regression")
     >>> model = create_model("gnn", task_type="classification")
     >>> model = create_model("lgbm_morgan", overrides={"lightgbm_params": {"n_estimators": 100}})
+    >>> # Inject pre-built base models into an ensemble:
+    >>> ensemble = create_model("ensemble_stacking", base_models=fitted_base_models)
     """
     models_config = _load_models_config(config_path)
 
@@ -114,7 +123,7 @@ def create_model(
     elif model_type == "sklearn":
         return _create_sklearn_model(config, task_type)
     elif model_type == "ensemble":
-        return _create_ensemble_model(config, task_type, config_path)
+        return _create_ensemble_model(config, task_type, config_path, base_models=base_models)
     else:
         raise ValueError(
             f"Unknown model type: {model_type!r}. "
@@ -211,7 +220,12 @@ def _create_sklearn_model(config: dict, task_type: str):
     return model
 
 
-def _create_ensemble_model(config: dict, task_type: str, config_path=None):
+def _create_ensemble_model(
+    config: dict,
+    task_type: str,
+    config_path=None,
+    base_models: dict[str, Any] | None = None,
+):
     """Build an ensemble model from config.
 
     Config keys consumed:
@@ -222,6 +236,9 @@ def _create_ensemble_model(config: dict, task_type: str, config_path=None):
         - n_folds: int (stacking)
 
     GNN base models are automatically wrapped in GNNModelWrapper.
+
+    If ``base_models`` is provided as a dict of pre-instantiated model objects,
+    the config's ``base_models`` name list is skipped entirely.
     """
     from molgate.models.ensemble import (
         BlendingEnsemble,
@@ -231,35 +248,49 @@ def _create_ensemble_model(config: dict, task_type: str, config_path=None):
     )
 
     ensemble_type = config.get("ensemble_type", "voting")
-    base_model_names = config.get("base_models", [])
-    if not base_model_names:
-        raise ValueError("ensemble config must include at least one entry in 'base_models'")
 
-    # Recursively create each base model
-    base_models: dict[str, Any] = {}
-    for name in base_model_names:
-        m = create_model(name, task_type=task_type, config_path=config_path)
-        # Wrap GNN in GNNModelWrapper so it fits the ensemble interface
-        if hasattr(m, "training_config"):
-            training_cfg = m.training_config
-            m = GNNModelWrapper(
-                gnn_model=m,
-                training_config=training_cfg,
-                task_type=task_type,
-            )
-        base_models[name] = m
+    if base_models is not None:
+        # Caller supplied pre-built instances — wrap any bare GNNs and use as-is.
+        # Check for GNNModelWrapper first to avoid double-wrapping (it also has
+        # training_config set on it).
+        resolved: dict[str, Any] = {}
+        for name, m in base_models.items():
+            if hasattr(m, "training_config") and not isinstance(m, GNNModelWrapper):
+                training_cfg = m.training_config
+                m = GNNModelWrapper(
+                    gnn_model=m,
+                    training_config=training_cfg,
+                    task_type=task_type,
+                )
+            resolved[name] = m
+    else:
+        base_model_names = config.get("base_models", [])
+        if not base_model_names:
+            raise ValueError("ensemble config must include at least one entry in 'base_models'")
+
+        resolved = {}
+        for name in base_model_names:
+            m = create_model(name, task_type=task_type, config_path=config_path)
+            if hasattr(m, "training_config"):
+                training_cfg = m.training_config
+                m = GNNModelWrapper(
+                    gnn_model=m,
+                    training_config=training_cfg,
+                    task_type=task_type,
+                )
+            resolved[name] = m
 
     meta_alpha = config.get("meta_alpha", 1.0)
     n_folds = config.get("n_folds", 5)
     weights = config.get("weights", None)
 
     if ensemble_type == "voting":
-        return VotingEnsemble(base_models, task_type=task_type, weights=weights)
+        return VotingEnsemble(resolved, task_type=task_type, weights=weights)
     elif ensemble_type == "blending":
-        return BlendingEnsemble(base_models, task_type=task_type, meta_alpha=meta_alpha)
+        return BlendingEnsemble(resolved, task_type=task_type, meta_alpha=meta_alpha)
     elif ensemble_type == "stacking":
         return StackingEnsemble(
-            base_models, task_type=task_type, n_folds=n_folds, meta_alpha=meta_alpha
+            resolved, task_type=task_type, n_folds=n_folds, meta_alpha=meta_alpha
         )
     else:
         raise ValueError(
